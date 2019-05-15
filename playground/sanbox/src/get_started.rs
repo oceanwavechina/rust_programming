@@ -3,18 +3,23 @@ extern crate piston_window;
 use piston_window::*;
 use std::net::TcpListener;
 
-
-fn main() {
-    //test_dependency();
+pub fn run() {
+    
     test_stdlib_webserver();
 
     test_types();
+    
     test_functions("chris");
-    add(5, 5)
+    
+    add(5, 5);
+
+    test_dependency();
 }
 
 fn test_stdlib_webserver() {
-    let listener = TcpListener::bind("127.0.0.1:10086").unwrap();
+    let addr = "127.0.0.1:10086";
+    let listener = TcpListener::bind(addr).unwrap();
+    println!("the webserver is listening at {} ...", addr);
     for stream in listener.incoming() {
         let stream  = stream.unwrap();
 
