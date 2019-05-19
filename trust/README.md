@@ -21,3 +21,12 @@ sudo tshark -i tun0
 
 
 pgrep -af python
+
+
+carte.io   找包
+
+
+http://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml
+
+nc 192.168.0.2 80
+# 192.168.0.1 → 192.168.0.2 40b of tcp to port 80
