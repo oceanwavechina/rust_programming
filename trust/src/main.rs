@@ -4,15 +4,15 @@ use std::net::Ipv4Addr;
 
 mod tcp;
 
-#![derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 struct Quad {
     src: (Ipv4Addr, u16),
     dst: (Ipv4Addr, u16),
 }
 
 fn main() -> io::Result<()> {
-	let mut connections: HashMap<Quad, tcp::state> = Default::default();
-	let nic = tun_tap::Iface::new("tun0", tun_tap::Mode::Tun)?;
+	let mut connections: HashMap<Quad, tcp::State> = Default::default();
+	let nic = tun_tap_mac::Iface::new("tun0", tun_tap_mac::Mode::Tun)?;
 	let mut buf = [0u8; 1504];
 	loop{
 	    let nbytes = nic.recv(&mut buf[..])?;
@@ -23,7 +23,8 @@ fn main() -> io::Result<()> {
 			continue;
 		}
 
-		let ip_hdr_sz = p.slice().len();
+		// 解析ip header
+		
 		match etherparse::Ipv4HeaderSlice::from_slice(&buf[4..nbytes]){
 			 Ok(iph) => {
 				 let src = iph.source_addr();
@@ -33,13 +34,15 @@ fn main() -> io::Result<()> {
 					continue;
 				 }
 				
+				// 解析tcp header
+				let ip_hdr_sz = iph.slice().len();
 				 match etherparse::TcpHeaderSlice::from_slice(&buf[4+iph.slice().len()..]) {
 					Ok(tcph) => {
 						let datai = 4 + iph.slice().len() + tcph.slice().len();
-					    connnections.entry(Quad {
+					    connections.entry(Quad {
 						    src: (src, tcph.source_port()),
 						    dst: (dst, tcph.destination_port()),
-					    }).or_default().on_packet(iph, tchp, &buf[datai..]);
+					    }).or_default().on_packet(iph, tcph, &buf[datai..]);
 				        // (srcip, srcport, dstip, dstport)
 					},
 					Err(e) => {
