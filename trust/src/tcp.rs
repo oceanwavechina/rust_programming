@@ -190,6 +190,7 @@ impl Connection {
 		let ackn = tcph.acknowledgment_number();
 		if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
 			return Ok(());
+			// return Err((io::Error::new(io::ErrorKind::BrokenPipe, "tried to ack unsent byte")));
 		}
 
 		/*
@@ -233,10 +234,38 @@ impl Connection {
 			return Ok(());
 		}
 
+		/** 
+		    (RFC793 p29)
+
+				TCP A                                                TCP B
+
+			1.  CLOSED                                               LISTEN
+
+			2.  SYN-SENT    --> <SEQ=100><CTL=SYN>               --> SYN-RECEIVED
+
+			3.  ESTABLISHED <-- <SEQ=300><ACK=101><CTL=SYN,ACK>  <-- SYN-RECEIVED
+
+			4.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK>       --> ESTABLISHED
+
+			5.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK><DATA> --> ESTABLISHED
+
+					Basic 3-Way Handshake for Connection Synchronization
+
+											Figure 7.
+		*/
 
 		match self.state {
 			State::SynRcvd => {
 				// expect to get an ACK from our SYN
+				if !tcph.ack() {
+					return Ok(());
+				}
+				// must have  ACLed our SYN, since we detected at least one acked byte
+				// and we have only sent one byte (the SYN)
+				// the three-way handshake finished !!!
+				self.state = State::Estab;
+
+				// now let's terminate the connection!
 				
 			}
 			State::Estab => {
