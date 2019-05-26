@@ -7,13 +7,15 @@ pub enum State {
 	// Listen,
 	SynRcvd,
 	Estab,
+	FinWait1,
+	Closeing,
 }
 
 impl State {
 	fn is_non_synchronized(&self) -> bool {
 		match *self {
 			State::SynRcvd => false,
-			State::Estab => true,
+			State::Estab | State::FinWait1 | State::Closeing => true,
 		}
 	}
 }
@@ -326,16 +328,31 @@ impl Connection {
 				if !tcph.ack() {
 					return Ok(());
 				}
-				// must have  ACLed our SYN, since we detected at least one acked byte
+				// must have  ACKed our SYN, since we detected at least one acked byte
 				// and we have only sent one byte (the SYN)
 				// the three-way handshake finished !!!
 				self.state = State::Estab;
 
 				// now let's terminate the connection!
-
+				// TODO: needs to be stored in the retransmission queue!
+				// because fin must be sent after the data, if any
+				self.tcp.fin = true;
+				self.write(nic, &[])?;
+				self.state = State::FinWait1;
 			}
 			State::Estab => {
 				unimplemented!();
+			}
+			State::FinWait1 => {
+				if !tcph.fin() || data.is_empty() {
+					unimplemented!();
+				}
+
+				// must have  ACKed our SYN, since we detected at least one acked byte
+				// and we have only sent one byte (the SYN)
+				self.tcp.fin = false;
+				self.write(nic, &[])?;
+				self.state = State::Closeing;
 			}
 		}
 
