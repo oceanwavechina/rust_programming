@@ -30,3 +30,9 @@ http://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml
 
 nc 192.168.0.2 80
 # 192.168.0.1 → 192.168.0.2 40b of tcp to port 80
+
+tshark -i tun0
+
+1:06:00
+2:34:00
+
