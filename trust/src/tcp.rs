@@ -9,6 +9,15 @@ pub enum State {
 	Estab,
 }
 
+impl State {
+	fn is_non_synchronized(&self) -> bool {
+		match *self {
+			State::SynRcvd => false,
+			State::Estab => true,
+		}
+	}
+}
+
 /* tcprfc: Transmission Control Block (p10)
 	https://tools.ietf.org/html/rfc793
 */
@@ -17,6 +26,7 @@ pub struct Connection {
 	send: SendSequeceSpace,
 	recv: RecvSequenceSpace,
 	ip: etherparse::Ipv4Header,
+	tcp: etherparse::TcpHeader,
 }
 
 ///
@@ -97,6 +107,7 @@ impl Connection {
 		}
 
 		let iss = 0;
+		let wnd = 10;
 		let mut c = Connection{
 			// after get the SYN request from client, 
 			// the server state gonna be  SynRcvd ( checkout the RFC)
@@ -104,8 +115,8 @@ impl Connection {
 			send: SendSequeceSpace {
 				iss,
 				una: iss,
-				nxt: iss + 1,
-				wnd: 10,
+				nxt: iss,
+				wnd: wnd,
 				up: false,
 
 				wl1: 0,
@@ -118,6 +129,12 @@ impl Connection {
 				wnd: tcph.window_size(),
 				up: false,
 			},
+			tcp: etherparse::TcpHeader::new(
+				tcph.destination_port(), 
+				tcph.source_port(), 
+				iss, // random
+				wnd,
+			);
 			ip: etherparse::Ipv4Header::new(
 				0, 
 				64, 
@@ -137,41 +154,86 @@ impl Connection {
 			),
 		};
 
-		
+	
 		// need to establish a connection
+		self.tcp.syn = true;
+		self.tcp.ack = true;
+		c.write(nic, &[])?;
+
+		Ok(Some(c))
+	}
+
+	fn write(&mut self, nic:&mut tun_tap::Iface, payload: &[u8]) -> io::Result<(usize)> {
+		let mut buf =  [0u8; 1500];
+
+		self.tcp.sequence_number = self.send.nxt;
 		// https://docs.rs/etherparse/0.8.2/etherparse/struct.TcpHeader.html
-		let mut syn_ack = etherparse::TcpHeader::new(
-			tcph.destination_port(), 
-			tcph.source_port(), 
-			c.send.iss, // random
-			c.send.wnd,
+			// 这里返回的ack是clientsyn的number的下一个，详见 RFC 793
+		self.tcp.acknowledgment_number = self.recv.nxt;
+
+		let size = std::cmp::min(
+			buf.len(), 
+			self.tcp.header_len() as usize + self.ip.header_len() as usize + payload.len()
 		);
-		// 这里返回的ack是clientsyn的number的下一个，详见 RFC 793
-		syn_ack.acknowledgment_number = c.recv.nxt;
-		syn_ack.syn = true;
-		syn_ack.ack = true;
-		c.ip.set_payload_len(syn_ack.header_len() as usize + 0/* data len*/);
-		
+
+		self.ip.set_payload_len(size);
 
 		// kernel does this already
-		// syn_ack.checksum = syn_ack.calc_checksum_ipv4(&ip, &[])
+		// self.tcp.checksum = self.tcp.calc_checksum_ipv4(&self.ip, &[])
 		// 						  .expect("failed to compute checksum");
 
 		// write out the headers
-		let unwritten = {
-			let mut unwritten = &mut buf[..];
-			c.ip.write(& mut unwritten);
-			syn_ack.write(& mut unwritten);
-			unwritten.len()
-		};
+		use std::io::Write;
+		let mut unwritten = &mut buf[..];	// move to next writefull point we have not written yet
+		self.ip.write(& mut unwritten);
+		self.tcp.write(& mut unwritten);
+		let payload_bytes = unwritten.write(payload)?;
+		let unwritten = unwritten.len();
+		self.send.nxt = self.send.nxt.wrapping_add(payload_bytes as u32);
+		if self.tcp.syn() {
+			self.send.nxt = self.send.nxt.wrapping_add(1);
+			self.tcp.syn = false;
+		}
+		if self.tcp.fin() {
+			self.send.nxt = self.send.nxt.wrapping_add(1);
+			self.tcp.fin = false;
+		}
+
+		nic.send(&buf[..buf.len()-unwritten]);
+		Ok(payload_bytes);
 
 		// send ipv4header to client
 		/* modern os defend SYN-flood by not allocating any local resour until 
 			the connection is established
 		*/
-		nic.send(&buf[..unwritten])?;
+	}
 
-		Ok(Some(c))
+	fn send_rst( &mut self, nic: &mut tun_tap::Iface, ) -> io::Result< () > {
+		self.tcp.rst = true;
+
+		// TODO: fix sequcence number here
+		/** 
+			If the incoming segment has an ACK field, the reset takes its
+			sequence number from the ACK field of the segment, otherwise the
+			reset has sequence number zero and the ACK field is set to the sum
+			of the sequence number and segment length of the incoming segment.
+			The connection remains in the CLOSED state.
+		 */
+		// TODO: handle synchronized RST
+		/** 
+		 	3.  If the connection is in a synchronized state (ESTABLISHED,
+			FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT),
+			any unacceptable segment (out of window sequence number or
+			unacceptible acknowledgment number) must elicit only an empty
+			acknowledgment segment containing the current send-sequence number
+			and an acknowledgment indicating the next sequence number expected
+			to be received, and the connection remains in the same state.
+		 */
+		self.tcp.sequence_number = 0;
+		self.tcp.acknowledgment_number = 0;
+		self.ip.set_payload_len((self.tcp.header_len()));
+		self.write(nic, &[])?;
+		Ok(())
 	}
 
 	pub fn on_packet<'a> (
@@ -189,6 +251,10 @@ impl Connection {
 		*/ 
 		let ackn = tcph.acknowledgment_number();
 		if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
+			if !self.state.is_non_synchronized() {
+				// according to Reset Generation, we should send a RST
+				self.send_rst(nic);
+			}
 			return Ok(());
 			// return Err((io::Error::new(io::ErrorKind::BrokenPipe, "tried to ack unsent byte")));
 		}
@@ -266,7 +332,7 @@ impl Connection {
 				self.state = State::Estab;
 
 				// now let's terminate the connection!
-				
+
 			}
 			State::Estab => {
 				unimplemented!();
