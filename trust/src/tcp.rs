@@ -3,8 +3,8 @@ use std::io::prelude::*;
 
 
 pub enum State {
-	Closed,
-	Listen,
+	// Closed,
+	// Listen,
 	SynRcvd,
 	Estab,
 }
@@ -16,6 +16,7 @@ pub struct Connection {
 	state: State,
 	send: SendSequeceSpace,
 	recv: RecvSequenceSpace,
+	ip: etherparse::Ipv4Header,
 }
 
 ///
@@ -82,7 +83,7 @@ struct RecvSequenceSpace {
 
 impl Connection {
 	pub fn accept<'a> (
-		nic: &mut tun_tap_mac::Iface,
+		nic: &mut tun_tap::Iface,
 		iph: etherparse::Ipv4HeaderSlice<'a>, 
 		tcph: etherparse::TcpHeaderSlice<'a>, 
 		data: &'a [u8]
@@ -97,6 +98,8 @@ impl Connection {
 
 		let iss = 0;
 		let mut c = Connection{
+			// after get the SYN request from client, 
+			// the server state gonna be  SynRcvd ( checkout the RFC)
 			state: State::SynRcvd,
 			send: SendSequeceSpace {
 				iss,
@@ -115,6 +118,23 @@ impl Connection {
 				wnd: tcph.window_size(),
 				up: false,
 			},
+			ip: etherparse::Ipv4Header::new(
+				0, 
+				64, 
+				etherparse::IpTrafficClass::Tcp, 
+				[
+					iph.destination()[0],
+					iph.destination()[1],
+					iph.destination()[2],
+					iph.destination()[3],
+				],
+				[
+					iph.source()[0],
+					iph.source()[1],
+					iph.source()[2],
+					iph.source()[3],
+				]
+			),
 		};
 
 		
@@ -130,63 +150,79 @@ impl Connection {
 		syn_ack.acknowledgment_number = c.recv.nxt;
 		syn_ack.syn = true;
 		syn_ack.ack = true;
-
-		// send ipv4header to client
-		/* modern os defend SYN-flood by not allocating any local resour until 
-			the connection is established
-		*/
-		let mut ip = etherparse::Ipv4Header::new(
-			syn_ack.header_len(), 
-			64, 
-			etherparse::IpTrafficClass::Tcp, 
-			[
-				iph.destination()[0],
-				iph.destination()[1],
-				iph.destination()[2],
-				iph.destination()[3],
-			],
-			[
-				iph.source()[0],
-				iph.source()[1],
-				iph.source()[2],
-				iph.source()[3],
-			]
-		);
+		c.ip.set_payload_len(syn_ack.header_len() as usize + 0/* data len*/);
+		
 
 		// kernel does this already
 		// syn_ack.checksum = syn_ack.calc_checksum_ipv4(&ip, &[])
 		// 						  .expect("failed to compute checksum");
 
-		eprintln!("got ip header:\n {:02x?}", iph);
-		eprintln!("got tcp header:\n {:02x?}", tcph);
-
 		// write out the headers
 		let unwritten = {
 			let mut unwritten = &mut buf[..];
-			ip.write(& mut unwritten);
+			c.ip.write(& mut unwritten);
 			syn_ack.write(& mut unwritten);
 			unwritten.len()
 		};
 
-		eprintln!("responding with {:02x?}", &buf[..buf.len() -unwritten]);
-
+		// send ipv4header to client
+		/* modern os defend SYN-flood by not allocating any local resour until 
+			the connection is established
+		*/
 		nic.send(&buf[..unwritten])?;
 
 		Ok(Some(c))
-		// eprintln!("{}:{} -> {}:{} {}b of tcp", 
-		// 	iph.source_addr(), tcph.source_port(),
-		// 	iph.destination_addr(), tcph.destination_port(),
-		// 	data.len());
 	}
 
 	pub fn on_packet<'a> (
 		&mut self,
-		nic: &mut tun_tap_mac::Iface,
+		nic: &mut tun_tap::Iface,
 		iph: etherparse::Ipv4HeaderSlice<'a>, 
 		tcph: etherparse::TcpHeaderSlice<'a>, 
 		data: &'a [u8]
 	) -> io::Result< () > {
-		//unimplemented!();
+		/* 
+			fist, check that sequence numbers are valid (RFC S3.3)
+			acceptable ack check
+		   	SND.UNA < SEG.ACK =< SND.NXT
+		   	but remember wrapping
+		*/ 
+		let ackn = tcph.acknowledgment_number();
+		if self.send.una < ackn {
+
+			// check is violated iff n is between u and a	
+			// hard to understand ...
+			// it's better to draw it out
+			if self.send.nxt >= self.send.una && self.send.nxt < ackn {
+				return Ok(());
+			}
+		
+		} else {
+			// wrap around because una >= ackn
+			// check is Okay iff n is betwween u and a
+			if self.send.nxt >= ackn && self.send.nxt < self.send.una {
+
+			} else {
+				return Ok(());
+			}
+		}
+		// it's should not be so easy ...
+		// if !(self.send.una < tcph.acknowledgment_number()  && tcph.acknowledgment_number() <= self.send.nxt) {
+		// 	return Ok(())
+		// }
+
+
+
+		match self.state {
+			State::SynRcvd => {
+				// expect to get an ACK from our SYN
+				
+			}
+			State::Estab => {
+				unimplemented!();
+			}
+		}
+
 		Ok(())
 	}
 
