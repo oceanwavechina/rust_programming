@@ -188,29 +188,24 @@ impl Connection {
 		   	but remember wrapping
 		*/ 
 		let ackn = tcph.acknowledgment_number();
-		if self.send.una < ackn {
-
-			// check is violated iff n is between u and a	
-			// hard to understand ...
-			// it's better to draw it out
-			if self.send.nxt >= self.send.una && self.send.nxt < ackn {
-				return Ok(());
-			}
-		
-		} else {
-			// wrap around because una >= ackn
-			// check is Okay iff n is betwween u and a
-			if self.send.nxt >= ackn && self.send.nxt < self.send.una {
-
-			} else {
-				return Ok(());
-			}
+		if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
+			return Ok(());
 		}
-		// it's should not be so easy ...
-		// if !(self.send.una < tcph.acknowledgment_number()  && tcph.acknowledgment_number() <= self.send.nxt) {
-		// 	return Ok(())
-		// }
 
+		/*
+			valid segment check, okay if it acks at least on byte,
+			which means that at least one of the follwoing is true:
+				RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND  (the first byte of the segment)
+				RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND  (the last byte of the segment)
+		*/
+		let seqn = tcph.sequence_number();
+		
+
+		let wend = self.recv.nxt.wrapping_add(self.recv.wnd as u32);
+		if !is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn, wend) &&
+		   !is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn+data.len() as u32 - 1, wend) {
+			return Ok(());
+		}
 
 
 		match self.state {
@@ -226,4 +221,87 @@ impl Connection {
 		Ok(())
 	}
 
+}
+
+fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
+
+	// it's should not be so easy ...
+	// if !(self.send.una < tcph.acknowledgment_number()  && tcph.acknowledgment_number() <= self.send.nxt) {
+	// 	return Ok(())
+	// }
+
+	use std::cmp::Ordering;
+	match start.cmp(x) {
+		Ordering::Equal => return false,
+		
+		Ordering::Less => {
+			/* 
+				check is violated iff n is between start and x
+				hard to understand ...
+				it's better to draw it out
+				using < or <= ?
+				
+				we have: 
+			   		
+			  		0 |----------------S--------X---------------------| (wrapparound)
+			  
+			   	X is between S and E (S < X < E) in these cases:
+			    	0 |----------------S--------X-----E---------------| (wrapparound)
+					
+					0 |-------------E--S--------X---------------------| (wrapparound)
+				
+				but *not* in these cases
+					0 |----------------S---E----X---------------------| (wrapparound)
+
+					0 |----------------|--------X---------------------| (wrapparound)
+									 ^- S+E
+					
+					0 |----------------S--------|---------------------| (wrapparound)
+									     X+E -^									 
+
+				or , in other words, iff !(S <= E <= X)
+			*/
+			if start <= end && end <= x {
+				return false;
+			}
+		},
+		Ordering::Greater => {
+			/* 
+				check is violated iff n is between start and x
+				hard to understand ...
+				it's better to draw it out
+				using < or <= ?
+				
+				we have the opposite of above: 
+			   		
+			  		0 |----------------X--------S---------------------| (wrapparound)
+			  
+			   	X is between S and E (S < X < E) *only* in these cases:
+				   
+				   0 |----------------X--E----S-----------------------| (wrapparound)
+			    	
+				but *not* in these cases
+					
+					0 |----------------X------S---E-------------------| (wrapparound)
+					
+					0 |-------------E--X-------S----------------------| (wrapparound)
+
+					0 |---------------|--------S----------------------| (wrapparound)
+									  ^- X+E
+					
+					0 |---------------X--------|----------------------| (wrapparound)
+									      S+E -^									 
+
+				or , in other words, iff S < E < X
+			*/
+			// wrap around because una >= ackn
+			// check is Okay iff n is betwween u and a
+			if end < start && end > x {
+			} else {
+				return false;
+			}
+		}
+	}
+		
+	true
 }
