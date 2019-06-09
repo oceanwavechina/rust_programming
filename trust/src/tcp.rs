@@ -1,9 +1,7 @@
 use std::io;
-use std::io::prelude::*;
 
 
 pub enum State {
-	// Closed,
 	// Listen,
 	SynRcvd,
 	Estab,
@@ -133,12 +131,7 @@ impl Connection {
 				wnd: tcph.window_size(),
 				up: false,
 			},
-			tcp: etherparse::TcpHeader::new(
-				tcph.destination_port(), 
-				tcph.source_port(), 
-				iss, // random
-				wnd,
-			),
+			tcp: etherparse::TcpHeader::new(tcph.destination_port(), tcph.source_port(), iss, wnd),
 
 			//param (payload_len: u16, time_to_live: u8, protocol: IpTrafficClass, source: [u8;4], destination: [u8;4])
 			ip: etherparse::Ipv4Header::new(
@@ -180,12 +173,12 @@ impl Connection {
 			self.tcp.header_len() as usize + self.ip.header_len() as usize + payload.len()
 		);
 
-		self.ip.set_payload_len(size);
+		self.ip.set_payload_len(size - self.ip.header_len() as usize);
 
 		// kernel does this already
-		// self.tcp.checksum = self.tcp
-		//		.calc_checksum_ipv4(&self.ip, &[])
-		// 		.expect("failed to compute checksum");
+		self.tcp.checksum = self.tcp
+				.calc_checksum_ipv4(&self.ip, &[])
+				.expect("failed to compute checksum");
 
 		// write out the headers
 		use std::io::Write;
@@ -251,25 +244,34 @@ impl Connection {
 			slen += 1;
 		};
 		let wend = self.recv.nxt.wrapping_add(self.recv.wnd as u32);
-		if slen == 0 {
+		let okay = if slen == 0 {
 			// zero length segment has  sperate rules for acceptance
 			if self.recv.wnd == 0 {
 				if seqn != self.recv.nxt {
-					return Ok(());
+					false
+				} else {
+					true
 				}
-			} else if !is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn, wend) {
-				return Ok(());		
+			} else if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend) {
+				false
+			} else {
+				true
 			}
 		} else {
 			if self.recv.wnd == 0 {
-				return Ok(());
+				false
+			} else if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend) &&
+					!is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn.wrapping_add(slen - 1), wend) 
+			{
+				false
 			} else {
-				if !is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn, wend) &&
-					!is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn.wrapping_add(slen - 1), wend) 
-				{
-					return Ok(());
-				}		
+				true
 			}
+		};
+
+		if !okay {
+			self.write(nic, &[])?;
+			return Ok(());
 		}
 
 		self.recv.nxt = seqn.wrapping_add(slen);
@@ -280,28 +282,9 @@ impl Connection {
 			return Ok(());
 		}
 
-		/** 
-		    (RFC793 p29)
-
-				TCP A                                                TCP B
-
-			1.  CLOSED                                               LISTEN
-
-			2.  SYN-SENT    --> <SEQ=100><CTL=SYN>               --> SYN-RECEIVED
-
-			3.  ESTABLISHED <-- <SEQ=300><ACK=101><CTL=SYN,ACK>  <-- SYN-RECEIVED
-
-			4.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK>       --> ESTABLISHED
-
-			5.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK><DATA> --> ESTABLISHED
-
-					Basic 3-Way Handshake for Connection Synchronization
-
-											Figure 7.
-		*/
 		let ackn = tcph.acknowledgment_number();
 		if let State::SynRcvd = self.state {
-			if !is_between_wrapped(self.send.una.wrapping_sub(1), ackn, self.send.nxt.wrapping_add(1)) {
+			if is_between_wrapped(self.send.una.wrapping_sub(1), ackn, self.send.nxt.wrapping_add(1)) {
 				// must have  ACKed our SYN, since we detected at least one acked byte
 				// and we have only sent one byte (the SYN)
 				// the three-way handshake finished !!!
@@ -311,18 +294,21 @@ impl Connection {
 			}
 		}
 
-		if let State::Estab = self.state {
+		if let State::Estab | State::FinWait1 | State::FinWait2  = self.state {
 			if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
 				return Ok(());
 			}
 			self.send.una = ackn;
 			// TODO
 			assert!(data.is_empty());
-			// now let's terminate the connection!
-			// TODO: needs to be stored in the retransmission queue!
-			self.tcp.fin = true;
-			self.write(nic, &[])?;
-			self.state = State::FinWait1;
+
+			if let State::Estab = self.state {
+				// now let's terminate the connection!
+				// TODO: needs to be stored in the retransmission queue!
+				self.tcp.fin = true;
+				self.write(nic, &[])?;
+				self.state = State::FinWait1;
+			}
 		}
 
 		if let State::FinWait1 = self.state {
@@ -342,7 +328,6 @@ impl Connection {
 				_ => unimplemented!(),
 			}
 		}
-
 
 		Ok(())
 	}
