@@ -8,14 +8,15 @@ pub enum State {
 	SynRcvd,
 	Estab,
 	FinWait1,
-	Closeing,
+	FinWait2,
+	TimeWait,
 }
 
 impl State {
 	fn is_non_synchronized(&self) -> bool {
 		match *self {
 			State::SynRcvd => false,
-			State::Estab | State::FinWait1 | State::Closeing => true,
+			State::Estab | State::FinWait1 | State::FinWait2 | State::TimeWait => true,
 		}
 	}
 }
@@ -104,12 +105,13 @@ impl Connection {
 		let mut buf =  [0u8; 1500];
 			
 		if !tcph.syn() {
-			// onlyn expected SYN packet
+			// only expected SYN packet
 			return Ok(None);
 		}
 
-		let iss = 0;
-		let wnd = 10;
+		// 初始化Connection结构体
+		let iss = 0;		// initial sequence number
+		let wnd = 10;		// window
 		let mut c = Connection{
 			// after get the SYN request from client, 
 			// the server state gonna be  SynRcvd ( checkout the RFC)
@@ -122,7 +124,7 @@ impl Connection {
 				up: false,
 
 				wl1: 0,
-				wl2:0,
+				wl2: 0,
 			},
 			recv: RecvSequenceSpace {
 				// keep track of sender info
@@ -136,13 +138,15 @@ impl Connection {
 				tcph.source_port(), 
 				iss, // random
 				wnd,
-			);
+			),
+
+			//param (payload_len: u16, time_to_live: u8, protocol: IpTrafficClass, source: [u8;4], destination: [u8;4])
 			ip: etherparse::Ipv4Header::new(
 				0, 
 				64, 
 				etherparse::IpTrafficClass::Tcp, 
 				[
-					iph.destination()[0],
+					iph.destination()[0], 
 					iph.destination()[1],
 					iph.destination()[2],
 					iph.destination()[3],
@@ -158,19 +162,17 @@ impl Connection {
 
 	
 		// need to establish a connection
-		self.tcp.syn = true;
-		self.tcp.ack = true;
+		// set the syn and ack field
+		c.tcp.syn = true;
+		c.tcp.ack = true;
 		c.write(nic, &[])?;
 
 		Ok(Some(c))
 	}
 
-	fn write(&mut self, nic:&mut tun_tap::Iface, payload: &[u8]) -> io::Result<(usize)> {
+	fn write(&mut self, nic:&mut tun_tap::Iface, payload: &[u8]) -> io::Result<usize> {
 		let mut buf =  [0u8; 1500];
-
 		self.tcp.sequence_number = self.send.nxt;
-		// https://docs.rs/etherparse/0.8.2/etherparse/struct.TcpHeader.html
-			// 这里返回的ack是clientsyn的number的下一个，详见 RFC 793
 		self.tcp.acknowledgment_number = self.recv.nxt;
 
 		let size = std::cmp::min(
@@ -181,59 +183,53 @@ impl Connection {
 		self.ip.set_payload_len(size);
 
 		// kernel does this already
-		// self.tcp.checksum = self.tcp.calc_checksum_ipv4(&self.ip, &[])
-		// 						  .expect("failed to compute checksum");
+		// self.tcp.checksum = self.tcp
+		//		.calc_checksum_ipv4(&self.ip, &[])
+		// 		.expect("failed to compute checksum");
 
 		// write out the headers
 		use std::io::Write;
-		let mut unwritten = &mut buf[..];	// move to next writefull point we have not written yet
-		self.ip.write(& mut unwritten);
+		let mut unwritten = &mut buf[..];	
+		self.ip.write(& mut unwritten);		// move to next writefull point we have not written yet
 		self.tcp.write(& mut unwritten);
 		let payload_bytes = unwritten.write(payload)?;
 		let unwritten = unwritten.len();
 		self.send.nxt = self.send.nxt.wrapping_add(payload_bytes as u32);
-		if self.tcp.syn() {
+		if self.tcp.syn {
 			self.send.nxt = self.send.nxt.wrapping_add(1);
 			self.tcp.syn = false;
 		}
-		if self.tcp.fin() {
+		if self.tcp.fin {
 			self.send.nxt = self.send.nxt.wrapping_add(1);
 			self.tcp.fin = false;
 		}
 
-		nic.send(&buf[..buf.len()-unwritten]);
-		Ok(payload_bytes);
-
-		// send ipv4header to client
-		/* modern os defend SYN-flood by not allocating any local resour until 
-			the connection is established
-		*/
+		nic.send(&buf[..buf.len() - unwritten])?;
+		Ok(payload_bytes)
 	}
 
 	fn send_rst( &mut self, nic: &mut tun_tap::Iface, ) -> io::Result< () > {
 		self.tcp.rst = true;
 
 		// TODO: fix sequcence number here
-		/** 
-			If the incoming segment has an ACK field, the reset takes its
-			sequence number from the ACK field of the segment, otherwise the
-			reset has sequence number zero and the ACK field is set to the sum
-			of the sequence number and segment length of the incoming segment.
-			The connection remains in the CLOSED state.
-		 */
+		
+		// If the incoming segment has an ACK field, the reset takes its
+		// sequence number from the ACK field of the segment, otherwise the
+		// reset has sequence number zero and the ACK field is set to the sum
+		// of the sequence number and segment length of the incoming segment.
+		// The connection remains in the CLOSED state.
+		
 		// TODO: handle synchronized RST
-		/** 
-		 	3.  If the connection is in a synchronized state (ESTABLISHED,
-			FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT),
-			any unacceptable segment (out of window sequence number or
-			unacceptible acknowledgment number) must elicit only an empty
-			acknowledgment segment containing the current send-sequence number
-			and an acknowledgment indicating the next sequence number expected
-			to be received, and the connection remains in the same state.
-		 */
+		// 3.  If the connection is in a synchronized state (ESTABLISHED,
+		// FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT),
+		// any unacceptable segment (out of window sequence number or
+		// unacceptible acknowledgment number) must elicit only an empty
+		// acknowledgment segment containing the current send-sequence number
+		// and an acknowledgment indicating the next sequence number expected
+		// to be received, and the connection remains in the same state.
+
 		self.tcp.sequence_number = 0;
 		self.tcp.acknowledgment_number = 0;
-		self.ip.set_payload_len((self.tcp.header_len()));
 		self.write(nic, &[])?;
 		Ok(())
 	}
@@ -244,29 +240,8 @@ impl Connection {
 		iph: etherparse::Ipv4HeaderSlice<'a>, 
 		tcph: etherparse::TcpHeaderSlice<'a>, 
 		data: &'a [u8]
-	) -> io::Result< () > {
-		/* 
-			fist, check that sequence numbers are valid (RFC S3.3)
-			acceptable ack check
-		   	SND.UNA < SEG.ACK =< SND.NXT
-		   	but remember wrapping
-		*/ 
-		let ackn = tcph.acknowledgment_number();
-		if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
-			if !self.state.is_non_synchronized() {
-				// according to Reset Generation, we should send a RST
-				self.send_rst(nic);
-			}
-			return Ok(());
-			// return Err((io::Error::new(io::ErrorKind::BrokenPipe, "tried to ack unsent byte")));
-		}
-
-		/*
-			valid segment check, okay if it acks at least on byte,
-			which means that at least one of the follwoing is true:
-				RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND  (the first byte of the segment)
-				RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND  (the last byte of the segment)
-		*/
+	) -> io::Result<()> {
+		//fist, check that sequence numbers are valid (RFC S3.3)
 		let seqn = tcph.sequence_number();
 		let mut slen = data.len() as u32;
 		if tcph.fin() {
@@ -290,15 +265,18 @@ impl Connection {
 				return Ok(());
 			} else {
 				if !is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn, wend) &&
-					!is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn+data.len() as u32 - 1, wend) 
+					!is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn.wrapping_add(slen - 1), wend) 
 				{
 					return Ok(());
 				}		
 			}
 		}
-		
-		if !is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn, wend) &&
-		   !is_between_wrapped(self.recv.nxt.wrapping_add(1), seqn+slen - 1, wend) {
+
+		self.recv.nxt = seqn.wrapping_add(slen);
+		// TODO: if _not_ acceptable , send ACK
+		// <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+
+		if !tcph.ack() {
 			return Ok(());
 		}
 
@@ -321,44 +299,53 @@ impl Connection {
 
 											Figure 7.
 		*/
-
-		match self.state {
-			State::SynRcvd => {
-				// expect to get an ACK from our SYN
-				if !tcph.ack() {
-					return Ok(());
-				}
+		let ackn = tcph.acknowledgment_number();
+		if let State::SynRcvd = self.state {
+			if !is_between_wrapped(self.send.una.wrapping_sub(1), ackn, self.send.nxt.wrapping_add(1)) {
 				// must have  ACKed our SYN, since we detected at least one acked byte
 				// and we have only sent one byte (the SYN)
 				// the three-way handshake finished !!!
 				self.state = State::Estab;
-
-				// now let's terminate the connection!
-				// TODO: needs to be stored in the retransmission queue!
-				// because fin must be sent after the data, if any
-				self.tcp.fin = true;
-				self.write(nic, &[])?;
-				self.state = State::FinWait1;
-			}
-			State::Estab => {
-				unimplemented!();
-			}
-			State::FinWait1 => {
-				if !tcph.fin() || data.is_empty() {
-					unimplemented!();
-				}
-
-				// must have  ACKed our SYN, since we detected at least one acked byte
-				// and we have only sent one byte (the SYN)
-				self.tcp.fin = false;
-				self.write(nic, &[])?;
-				self.state = State::Closeing;
+			} else {
+				// TODO: <SEQ=SEG.ACK><CTL=RST>
 			}
 		}
 
+		if let State::Estab = self.state {
+			if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
+				return Ok(());
+			}
+			self.send.una = ackn;
+			// TODO
+			assert!(data.is_empty());
+			// now let's terminate the connection!
+			// TODO: needs to be stored in the retransmission queue!
+			self.tcp.fin = true;
+			self.write(nic, &[])?;
+			self.state = State::FinWait1;
+		}
+
+		if let State::FinWait1 = self.state {
+			if self.send.una == self.send.iss + 2 {
+				// our FIN has been acked!
+				self.state = State::FinWait2;
+			}
+		}
+
+		if tcph.fin() {
+			match self.state {
+				State::FinWait2 => {
+					// we're done with the connection !
+					self.write(nic, &[])?;
+					self.state = State::TimeWait;
+				}
+				_ => unimplemented!(),
+			}
+		}
+
+
 		Ok(())
 	}
-
 }
 
 fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
@@ -369,7 +356,7 @@ fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
 	// }
 
 	use std::cmp::Ordering;
-	match start.cmp(x) {
+	match start.cmp(&x) {
 		Ordering::Equal => return false,
 		
 		Ordering::Less => {
