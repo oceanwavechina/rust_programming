@@ -1,4 +1,6 @@
 use std::io;
+use std::collections::VecDeque;
+use std::io;
 
 
 pub enum State {
@@ -28,6 +30,9 @@ pub struct Connection {
 	recv: RecvSequenceSpace,
 	ip: etherparse::Ipv4Header,
 	tcp: etherparse::TcpHeader,
+
+	incoming: VecDeque<u8>,
+	unacked: VecDeque<u8>,
 }
 
 ///
@@ -333,85 +338,19 @@ impl Connection {
 	}
 }
 
-fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
+fn wrapping_it(lhs:u32, rhs: u32) -> bool {
 
-	// it's should not be so easy ...
-	// if !(self.send.una < tcph.acknowledgment_number()  && tcph.acknowledgment_number() <= self.send.nxt) {
-	// 	return Ok(())
-	// }
+	// RFC1323:
+	// 	 TCP determines if a data segment is "old" or "new" by testing
+    //   whether its sequence number is within 2**31 bytes of the left edge
+    //   of the window, and if it is not, discarding the data as "old".  To
+    //   insure that new data is never mistakenly considered old and vice-
+    //   versa, the left edge of the sender's window has to be at most
+    //   2**31 away from the right edge of the receiver's window.
 
-	use std::cmp::Ordering;
-	match start.cmp(&x) {
-		Ordering::Equal => return false,
-		
-		Ordering::Less => {
-			/* 
-				check is violated iff n is between start and x
-				hard to understand ...
-				it's better to draw it out
-				using < or <= ?
-				
-				we have: 
-			   		
-			  		0 |----------------S--------X---------------------| (wrapparound)
-			  
-			   	X is between S and E (S < X < E) in these cases:
-			    	0 |----------------S--------X-----E---------------| (wrapparound)
-					
-					0 |-------------E--S--------X---------------------| (wrapparound)
-				
-				but *not* in these cases
-					0 |----------------S---E----X---------------------| (wrapparound)
+	lhs.wrapping_sub(rhs) > 2^31;
+}
 
-					0 |----------------|--------X---------------------| (wrapparound)
-									 ^- S+E
-					
-					0 |----------------S--------|---------------------| (wrapparound)
-									     X+E -^									 
-
-				or , in other words, iff !(S <= E <= X)
-			*/
-			if start <= end && end <= x {
-				return false;
-			}
-		},
-		Ordering::Greater => {
-			/* 
-				check is violated iff n is between start and x
-				hard to understand ...
-				it's better to draw it out
-				using < or <= ?
-				
-				we have the opposite of above: 
-			   		
-			  		0 |----------------X--------S---------------------| (wrapparound)
-			  
-			   	X is between S and E (S < X < E) *only* in these cases:
-				   
-				   0 |----------------X--E----S-----------------------| (wrapparound)
-			    	
-				but *not* in these cases
-					
-					0 |----------------X------S---E-------------------| (wrapparound)
-					
-					0 |-------------E--X-------S----------------------| (wrapparound)
-
-					0 |---------------|--------S----------------------| (wrapparound)
-									  ^- X+E
-					
-					0 |---------------X--------|----------------------| (wrapparound)
-									      S+E -^									 
-
-				or , in other words, iff S < E < X
-			*/
-			// wrap around because una >= ackn
-			// check is Okay iff n is betwween u and a
-			if end < start && end > x {
-			} else {
-				return false;
-			}
-		}
-	}
-		
-	true
+fn is_between_wrapped(start: u32, x: u32, end:u32) -> bool {
+	wrapping_it(start, x) && wrapping_it(x, end)
 }

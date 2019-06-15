@@ -8,3 +8,9 @@ edition = "2018"
 #tun-tap-mac = "0.1.2"
 tun-tap = "0.1.2"
 etherparse="0.8"
+
+[lib]
+name = "trust"
+
+[[bin]]
+name = "trust"
