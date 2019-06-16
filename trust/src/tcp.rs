@@ -1,6 +1,13 @@
 use std::collections::VecDeque;
+use bitflags::bitflags;
 use std::io;
 
+bitflags! {
+	pub(crate) struct Available: u8 {
+		const READ = 0b00000001;
+		const WRITE = 0b00000010;
+	}
+}
 
 pub enum State {
 	// Listen,
@@ -32,6 +39,24 @@ pub struct Connection {
 
 	pub(crate) incoming: VecDeque<u8>,	// 接收缓冲区
 	pub(crate) unacked: VecDeque<u8>,	// 发送缓冲区
+}
+
+impl Connection {
+	pub(crate) fn is_rcv_closed(&self) -> bool {
+		if let State::TimeWait = self.state {
+			true
+		} else {
+			false
+		}
+	}
+
+	fn availablility(&self) -> Available {
+		let mut a = Available::empty();
+		if self.is_rcv_closed() || !self.incoming.is_empty() {
+			a |= Available::READ;
+		}
+		a
+	}
 }
 
 ///
@@ -233,13 +258,13 @@ impl Connection {
 		Ok(())
 	}
 
-	pub fn on_packet<'a> (
+	pub(crate) fn on_packet<'a> (
 		&mut self,
 		nic: &mut tun_tap::Iface,
 		iph: etherparse::Ipv4HeaderSlice<'a>, 
 		tcph: etherparse::TcpHeaderSlice<'a>, 
 		data: &'a [u8]
-	) -> io::Result<()> {
+	) -> io::Result<Available> {
 		//fist, check that sequence numbers are valid (RFC S3.3)
 		let seqn = tcph.sequence_number();
 		let mut slen = data.len() as u32;
@@ -277,7 +302,7 @@ impl Connection {
 
 		if !okay {
 			self.write(nic, &[])?;
-			return Ok(());
+			return Ok(self.availablility());
 		}
 
 		self.recv.nxt = seqn.wrapping_add(slen);
@@ -285,7 +310,7 @@ impl Connection {
 		// <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
 
 		if !tcph.ack() {
-			return Ok(());
+			return Ok(self.availablility());
 		}
 
 		let ackn = tcph.acknowledgment_number();
@@ -301,10 +326,10 @@ impl Connection {
 		}
 
 		if let State::Estab | State::FinWait1 | State::FinWait2  = self.state {
-			if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
-				return Ok(());
+			if is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
+				self.send.una = ackn;
 			}
-			self.send.una = ackn;
+			
 			// TODO
 			assert!(data.is_empty());
 
@@ -335,7 +360,7 @@ impl Connection {
 			}
 		}
 
-		Ok(())
+		Ok(self.availablility())
 	}
 }
 
