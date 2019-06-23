@@ -135,7 +135,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
 				}
 			},
 			Err(e) => {
-				eprintln!("ignore weird packet {:?}", e)
+				//eprintln!("ignore weird packet {:?}", e)
 			}
 	    }
 	}
@@ -245,7 +245,6 @@ impl Read for TcpStream{
                 )
             })?;
 
-            eprintln!("reading data");
             if c.is_rcv_closed() && c.incoming.is_empty() {    
                 // peer closed
                 return Ok(0);
