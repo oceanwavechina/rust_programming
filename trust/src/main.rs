@@ -8,10 +8,17 @@ fn main() -> io::Result<()> {
 	let jh = thread::spawn(move || {
 		while let Ok(mut stream) = l.accept(){
 			eprintln!("got connection on 9000 !");
-			let n = stream.read(&mut [0]).unwrap();
-			eprintln!("read data");
-			assert_eq!(n, 0);
-			eprintln!("no more data");
+			loop {
+				let mut buf = [0; 512];
+				let n = stream.read(&mut buf[..]).unwrap();
+				eprintln!("read {}b of data", n);
+				if n == 0 {
+					eprintln!("no more data");
+					break;
+				} else {
+					println!("got {:?}", &buf[..n]);
+				}
+			}
 			
 		}
 	});
