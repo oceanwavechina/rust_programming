@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use bitflags::bitflags;
-use std::io;
+use std::{io, time};
 
 bitflags! {
 	pub(crate) struct Available: u8 {
@@ -25,6 +25,12 @@ impl State {
 			State::Estab | State::FinWait1 | State::FinWait2 | State::TimeWait => true,
 		}
 	}
+	fn hava_sent_fin(&self) -> bool {
+		match *self {
+			State::SynRcvd | State::Estab => false,
+			State::FinWait1 | State::FinWait2 | State::TimeWait => true,
+		}
+	}
 }
 
 /* tcprfc: Transmission Control Block (p10)
@@ -36,9 +42,17 @@ pub struct Connection {
 	recv: RecvSequenceSpace,
 	ip: etherparse::Ipv4Header,
 	tcp: etherparse::TcpHeader,
+	timers: Timers,
 
 	pub(crate) incoming: VecDeque<u8>,	// 接收缓冲区
 	pub(crate) unacked: VecDeque<u8>,	// 发送缓冲区
+	pub(crate) closed: bool,
+}
+
+struct Timers {
+	last_send: time::Instant,
+	send_times: VecDeque<(u32, time::Instant)>,
+	srtt: time::Duration,
 }
 
 impl Connection {
@@ -142,6 +156,12 @@ impl Connection {
 		let mut c = Connection{
 			// after get the SYN request from client, 
 			// the server state gonna be  SynRcvd ( checkout the RFC)
+			closed: false,
+			timers: Timers{ 
+				last_send: time::Instant::now(),
+				send_times: Default::default(),
+				srtt: time::Duration::from_secs(1*60),
+			},
 			state: State::SynRcvd,
 			send: SendSequeceSpace {
 				iss,
@@ -189,14 +209,15 @@ impl Connection {
 		// set the syn and ack field
 		c.tcp.syn = true;
 		c.tcp.ack = true;
-		c.write(nic, &[])?;
+		c.write(nic, c.send.nxt, &[])?;
 
 		Ok(Some(c))
 	}
 
-	fn write(&mut self, nic:&mut tun_tap::Iface, payload: &[u8]) -> io::Result<usize> {
+	fn write(&mut self, nic:&mut tun_tap::Iface, seq:u32, payload: &[u8]) -> io::Result<usize> {
 		let mut buf =  [0u8; 1500];
-		self.tcp.sequence_number = self.send.nxt;
+		//self.tcp.sequence_number = self.send.nxt;
+		self.tcp.sequence_number = seq;
 		self.tcp.acknowledgment_number = self.recv.nxt;
 
 		let size = std::cmp::min(
@@ -218,14 +239,18 @@ impl Connection {
 		self.tcp.write(& mut unwritten);
 		let payload_bytes = unwritten.write(payload)?;
 		let unwritten = unwritten.len();
-		self.send.nxt = self.send.nxt.wrapping_add(payload_bytes as u32);
+		let last_seq = seq.wrapping_add(payload_bytes as u32) - 1;
+		let next_seq = self.send.nxt.wrapping_add(payload_bytes as u32);
 		if self.tcp.syn {
-			self.send.nxt = self.send.nxt.wrapping_add(1);
+			next_seq = next_seq.wrapping_add(1);
 			self.tcp.syn = false;
 		}
 		if self.tcp.fin {
-			self.send.nxt = self.send.nxt.wrapping_add(1);
+			next_seq = next_seq.wrapping_add(1);
 			self.tcp.fin = false;
+		}
+		if wrapping_lt(self.send.nxt, next_seq) {
+			self.send.nxt = next_seq;
 		}
 
 		nic.send(&buf[..buf.len() - unwritten])?;
@@ -254,8 +279,48 @@ impl Connection {
 
 		self.tcp.sequence_number = 0;
 		self.tcp.acknowledgment_number = 0;
-		self.write(nic, &[])?;
+		self.write(nic, self.send.nxt, &[])?;
 		Ok(())
+	}
+
+	pub(crate) fn on_tick(&mut self, nic: &mut tun_tap::Iface) -> io::Result<Available> {
+		let nunacked = self.send.nxt.wrapping_sub(self.send.una);
+		let unsent = self.unacked.len() - nunacked as usize;
+
+		self.closed // has shutdown
+
+		let waited_for = self.last_send.elapsed();
+		if waited_for > time::Duration::from_secs(1) && waited_for > 1.5 * self.timers.srtt {
+			// we should retransmit things!
+			// send new data if we hava space in the window
+			let resend = std::cmp::min(self.unacked.len(), self.send.wnd);
+			self.write(nic, self.send.una, &self.unacked[..resend])?;
+			self.send.nxt = self.send.una.wrapping_add(self.send.wnd);
+		} else {
+			// send new data if we have new data and space in the window
+			if unsent == 0 {
+				return Ok(());
+			}
+
+			let allowed = self.send.wnd - nunacked;
+			if allowed == 0 {
+				return Ok(());
+			}
+
+
+			let send = std::cmp::min(unsent, allowed);
+			self.write(
+				nic,
+				self.send.nxt,
+				&self.unacked[nunacked..(nunacked + send)],
+			)?;
+		}
+		// decide if it needs to send sth
+		// send it
+		//
+		// if FIN, enter FIN-WAIT-1
+
+
 	}
 
 	pub(crate) fn on_packet<'a> (
@@ -301,7 +366,7 @@ impl Connection {
 		};
 
 		if !okay {
-			self.write(nic, &[])?;
+			self.write(nic, self.send.nxt, &[])?;
 			return Ok(self.availablility());
 		}
 
@@ -375,7 +440,8 @@ impl Connection {
 							.wrapping_add(data.len() as u32)
 							.wrapping_add(if tcph.fin() { 1 } else { 0 });
 
-			self.write(nic,&[])?;
+			// TODO m,ayba just tick ot piggyback ack on data?
+			self.write(nic,self.send.nxt, &[])?;
 			
 		}
 
@@ -383,7 +449,7 @@ impl Connection {
 			match self.state {
 				State::FinWait2 => {
 					// we're done with the connection !
-					self.write(nic, &[])?;
+					self.write(nic, self.send.nxt, &[])?;
 					self.state = State::TimeWait;
 				}
 				_ => unimplemented!(),

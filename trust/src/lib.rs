@@ -56,7 +56,27 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
     let mut buf = [0u8; 1504];
     
     loop{
-        // TODO timeout for recv
+        // we want to read from nic, but make sure that weill wake up when the next
+        // timer has to be riggered !
+        use std::os::unix::io::AsRawFd;
+        let mut pfd = [nix::poll::PollFd::new(
+            nic.as_raw_fd(),
+            nix::poll::EventFlags::POLLIN
+        )];
+        let n = nix::poll::poll(&mut pfd[..], 1).map_err(|e| {e.as_errno().unwrap()})?;
+        assert_ne!(n, -1);
+        if n == 0 {
+            // TODO: timeout
+            // println!("poll timeout");
+            let mut cmg = ih.manager.lock().unwrap();
+            for connection in cmg.values() {
+                // TODO: don't die on errors ?
+                connection.on_tick(&mut nic)?;
+            }
+
+            continue;
+        }
+        assert_eq!(n, 1);
 	    let nbytes = nic.recv(&mut buf[..])?;
 		
 		// if s/without_packet_info/new/:
@@ -89,9 +109,9 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                     let mut cmg = ih.manager.lock().unwrap();
                     let mut cm = &mut *cmg;
                     let q = Quad {
-							src: (src, tcph.source_port()),
-							dst: (dst, tcph.destination_port()),
-						};
+                        src: (src, tcph.source_port()),
+                        dst: (dst, tcph.destination_port()),
+                    };
 					match cm.connections.entry(q) {
 							Entry::Occupied(mut c) => {
                                 let a = c.get_mut().on_packet(
@@ -154,7 +174,10 @@ impl Interface {
             })
         };
 
-        Ok(Interface{ih: Some(ih), jh: Some(jh)})
+        Ok(Interface{
+            ih: Some(ih),
+            jh: Some(jh),
+        })
     }
 
     pub fn bind(&mut self, port: u16) -> io::Result<TcpListener> {
@@ -315,7 +338,15 @@ impl Write for TcpStream {
 
 impl TcpStream {
     pub fn shutdown(&self, how: std::net::Shutdown) -> io::Result<()> {
-        // TOOD: send fin
-        unimplemented!();
+        let mut cm = self.h.manager.lock().unwrap();
+        let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::ConnectionAborted, 
+                "stream was terminated unexpectedly!"
+            )
+        })?;
+        
+        c.closed = true;
+        Ok(())
     }
 }
