@@ -1,3 +1,4 @@
+#![feature(duration_float)]
 use std::collections::{VecDeque, HashMap};
 use std::io;
 use std::io::prelude::*;
@@ -63,13 +64,11 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
             nic.as_raw_fd(),
             nix::poll::EventFlags::POLLIN
         )];
-        let n = nix::poll::poll(&mut pfd[..], 1).map_err(|e| {e.as_errno().unwrap()})?;
+        let n = nix::poll::poll(&mut pfd[..], 1000).map_err(|e| e.as_errno().unwrap())?;
         assert_ne!(n, -1);
         if n == 0 {
-            // TODO: timeout
-            // println!("poll timeout");
             let mut cmg = ih.manager.lock().unwrap();
-            for connection in cmg.values() {
+            for connection in cmg.connections.values_mut() {
                 // TODO: don't die on errors ?
                 connection.on_tick(&mut nic)?;
             }
@@ -96,8 +95,8 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
 				let dst = iph.destination_addr();
 				if iph.protocol() != 0x06 {
 					println!("BAD PRPTOCOL");
-				// not tcp
-				continue;
+                    // not tcp
+                    continue;
 				}
 			
 			// 解析tcp header
@@ -107,7 +106,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
 					use std::collections::hash_map::Entry;
 					let datai = iph.slice().len() + tcph.slice().len();
                     let mut cmg = ih.manager.lock().unwrap();
-                    let mut cm = &mut *cmg;
+                    let cm = &mut *cmg;
                     let q = Quad {
                         src: (src, tcph.source_port()),
                         dst: (dst, tcph.destination_port()),
@@ -249,7 +248,7 @@ pub struct TcpStream {
 
 impl Drop for TcpStream {
     fn drop(&mut self) {
-        let mut cm = self.h.manager.lock().unwrap();
+        let cm = self.h.manager.lock().unwrap();
         // TODO:send fin on cmd.connections[quad]
         // if let Some(c) = cm.connections.remove(&self.quad) {    
         //     //unimplemented!();
@@ -346,7 +345,6 @@ impl TcpStream {
             )
         })?;
         
-        c.closed = true;
-        Ok(())
+        c.close()
     }
 }

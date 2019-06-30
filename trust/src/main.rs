@@ -8,6 +8,7 @@ fn main() -> io::Result<()> {
 	let jh = thread::spawn(move || {
 		while let Ok(mut stream) = l.accept(){
 			eprintln!("got connection on 9000 !");
+			stream.write(b"hello from server");
 			stream.shutdown(std::net::Shutdown::Write).unwrap();
 			loop {
 				let mut buf = [0; 512];
