@@ -6,8 +6,7 @@ rust 语言编程
 
 #### 目录结构
 
-1. trust
-    * tcp 协议的实现
+1. trust  (tcp协议的实现)
     * 包括 连接（三次握手）和断开
     * 数据的读、写
     * 数据的重传处理
@@ -16,3 +15,4 @@ rust 语言编程
      
 2. playground
     * rust 语言的练习
+    * 《[The Rust Programming Language](https://doc.rust-lang.org/book/title-page.html#the-rust-programming-language)》学习的笔记和代码
