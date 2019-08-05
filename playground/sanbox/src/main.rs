@@ -6,6 +6,8 @@ mod strings;
 mod tuples;
 mod arrays;
 mod vectors;
+mod functions;
+mod controlflow;
 
 fn main() {
     // print::run();
@@ -14,5 +16,6 @@ fn main() {
     // strings::run();
     // tuples::run();
     // arrays::run();
-    vectors::run();
+    // vectors::run();
+    controlflow::run();
 }

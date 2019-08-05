@@ -17,9 +17,15 @@ fn main() {
         io::stdin().read_line(&mut guess)
             .expect("Faild to read line");
 
-        // rust中可以在把之前声明的名字绑定到一个新的变量上
         //let guess: u32 = guess.trim().parse().expect("Please type a number!");
 
+        /*
+            rust中可以在把之前声明的名字绑定到一个新的变量上, 这种机制叫做 ** shadowing **
+            1. By using let, we can perform a few transformations on a value but have the variable be immutable 
+                after those transformations have been completed.
+            2. The other difference between mut and shadowing is that because we’re effectively creating a new variable 
+                when we use the let keyword again, we can change the type of the value but reuse the same name. 
+        */
         // parse 返回的是Result类型的结果，是一个enum，所以用match来匹配其中的内容
         let guess: u32 = match guess.trim().parse(){
             Ok(num) => num,
