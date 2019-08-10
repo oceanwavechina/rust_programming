@@ -8,6 +8,7 @@ mod arrays;
 mod vectors;
 mod functions;
 mod controlflow;
+mod ownership;
 
 fn main() {
     // print::run();
@@ -17,5 +18,6 @@ fn main() {
     // tuples::run();
     // arrays::run();
     // vectors::run();
-    controlflow::run();
+    // controlflow::run();
+    ownership::run();
 }
