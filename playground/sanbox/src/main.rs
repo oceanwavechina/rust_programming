@@ -9,6 +9,7 @@ mod vectors;
 mod functions;
 mod controlflow;
 mod ownership;
+mod structure;
 
 fn main() {
     // print::run();
@@ -19,5 +20,6 @@ fn main() {
     // arrays::run();
     // vectors::run();
     // controlflow::run();
-    ownership::run();
+    // ownership::run();
+    structure::run();
 }
