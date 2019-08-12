@@ -10,6 +10,7 @@ mod functions;
 mod controlflow;
 mod ownership;
 mod structure;
+mod enums_and_matching;
 
 fn main() {
     // print::run();
@@ -21,5 +22,6 @@ fn main() {
     // vectors::run();
     // controlflow::run();
     // ownership::run();
-    structure::run();
+    // structure::run();
+    enums_and_matching::run();
 }
