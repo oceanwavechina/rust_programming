@@ -11,6 +11,7 @@ mod controlflow;
 mod ownership;
 mod structure;
 mod enums_and_matching;
+mod common_collections;
 
 fn main() {
     // print::run();
@@ -23,5 +24,6 @@ fn main() {
     // controlflow::run();
     // ownership::run();
     // structure::run();
-    enums_and_matching::run();
+    // enums_and_matching::run();
+    common_collections::run();
 }
