@@ -6,24 +6,6 @@ mod tests {
     }
 }
 
-/* rust 的访问权限比计严格 
-    1. struct的每一个元素, 所有的默认都是private的，这个也符合数据隐藏的原则
-    2. 需要mod和function都声明为pub的才可以
-    3. 枚举的每个元素都是public的
-*/
-
-mod front_of_house {
-    pub mod hosting {
-        pub fn add_to_waitlist() { }
-        fn seat_at_table() { }
-    }
-
-   pub mod serving {
-        fn take_order() { }
-        pub fn serve_order() { }
-        fn take_payemnt() { }
-    }
-}
 
 fn serve_order() {}
 

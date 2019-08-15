@@ -12,6 +12,7 @@ mod ownership;
 mod structure;
 mod enums_and_matching;
 mod common_collections;
+mod error_handle;
 
 fn main() {
     // print::run();
@@ -25,5 +26,6 @@ fn main() {
     // ownership::run();
     // structure::run();
     // enums_and_matching::run();
-    common_collections::run();
+    // common_collections::run();
+    error_handle::run();
 }
