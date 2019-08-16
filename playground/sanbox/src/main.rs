@@ -13,6 +13,8 @@ mod structure;
 mod enums_and_matching;
 mod common_collections;
 mod error_handle;
+mod generic_type;
+mod traits;
 
 fn main() {
     // print::run();
@@ -27,5 +29,7 @@ fn main() {
     // structure::run();
     // enums_and_matching::run();
     // common_collections::run();
-    error_handle::run();
+    // error_handle::run();
+    // generic_type::run();
+    traits::run();
 }
