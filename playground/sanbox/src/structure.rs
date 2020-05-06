@@ -1,4 +1,13 @@
 
+
+/*
+    https://doc.rust-lang.org/nomicon/repr-rust.html
+    
+    关于struct的数据对齐
+        1. rust会通过插入padding的方式保证数据对齐，但是我们并不能假设这些padding真正会插入到那些地方
+        2. 为了使得对齐时尽可能少的浪费内存空间，rust可能会改变成员的顺序
+*/
+
 // 加上这个指令为了终端打印输出 
 #[derive(Debug)]
 struct User {
