@@ -8,7 +8,7 @@ use core::panic::PanicInfo;
 
 mod vga_buffer;
 
-
+#[warn(dead_code)]
 static HELLO: &[u8] = b"Hello World!";
 
 //
@@ -16,7 +16,8 @@ static HELLO: &[u8] = b"Hello World!";
 // https://doc.rust-lang.org/stable/rust-by-example/fn/diverging.html
 //
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    println!("{}", info);
     loop{}
 }
 
@@ -24,7 +25,10 @@ fn panic(_info: &PanicInfo) -> ! {
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
 
-    vga_buffer::print_something();
+    //vga_buffer::print_something();
+
+    println!("Hello World{}", "!");
+    panic!("Some panic message");
 
     // let vga_buffer = 0xb8000 as *mut u8;
 
@@ -35,5 +39,9 @@ pub extern "C" fn _start() -> ! {
     //     }
     // }
 
+    // use core::fmt::Write;
+    // vga_buffer::WRITER.lock().write_str("Hello again").unwrap();
+    // write!(vga_buffer::WRITER.lock(), ", some number: {}, {}", 42, 1.37).unwrap();
+        
     loop{}
 }

@@ -7,6 +7,8 @@
 use core::fmt;
 use core::fmt::Write;   // 需要加这个，貌似文章中2018版本的不用加
 use volatile::Volatile;
+use lazy_static::lazy_static;
+use spin::Mutex;
 
 
 #[allow(dead_code)]
@@ -31,6 +33,10 @@ pub enum Color {
     White = 15
 }
 
+//
+// https://doc.rust-lang.org/rust-by-example/generics/new_types.html
+// 新类型，用 
+//
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 struct ColorCode(u8);
@@ -104,7 +110,8 @@ impl Writer {
     }
 
     fn new_line(&mut self) {
-        // 先把原有的都往上拷贝一行
+        // 先把原有的都往上拷贝一行, 把第0行空出来，也就是最下边一行
+        // 这种写法，不包括 BUFFER_HEIGHT
         for row in 1..BUFFER_HEIGHT {
             for col in 0..BUFFER_WIDTH {
                 let character = self.buffer.chars[row][col].read();
@@ -149,6 +156,32 @@ pub fn print_something() {
     writer.write_string("\n\n");
     writer.write_string("World你好");   // 可以看到一个中文的utf8字符占用了3个字节
     write!(writer, "the number are {} and {}", 42, 1.0/3.0).unwrap();
+}
+
+
+lazy_static! {
+    pub static ref WRITER: Mutex<Writer> = Mutex::new( Writer {
+        column_position: 0,
+        color_code: ColorCode::new(Color::Yellow,Color::Black),
+        buffer: unsafe{&mut *(0xb8000 as *mut Buffer)},
+    });
+}
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::vga_buffer::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+}
+
+#[doc(hidden)]
+pub fn _print(args: fmt::Arguments) {
+    use core::fmt::Write;
+    WRITER.lock().write_fmt(args).unwrap();
 }
 
 
