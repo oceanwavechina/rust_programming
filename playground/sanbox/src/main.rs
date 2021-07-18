@@ -32,6 +32,8 @@ fn main() {
     // common_collections::run();
     // error_handle::run();
     // generic_type::run();
-    traits::run();
-    lifetime::run();
+    // traits::run();
+    // lifetime::run();
+
+    panic!("crash and burn");
 }

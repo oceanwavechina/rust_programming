@@ -37,6 +37,8 @@ impl State {
 
 /* tcprfc: Transmission Control Block (p10)
 	https://tools.ietf.org/html/rfc793
+
+    Connection 实例，完成具体的三次握手
 */
 pub struct Connection {
 	state: State,

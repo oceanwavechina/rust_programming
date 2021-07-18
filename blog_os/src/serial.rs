@@ -3,6 +3,10 @@ use spin::Mutex;
 use lazy_static::lazy_static;
 
 
+//
+// 这个模块是吧把信息打印到终端
+//
+
 lazy_static! {
     pub static ref SERIAL1: Mutex<SerialPort> = {
         let mut serial_port = unsafe { SerialPort::new(0x3F8) };

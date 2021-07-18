@@ -55,7 +55,7 @@ fn trivial_assertion() {
     // print!("trivial assertion ...");
     serial_println!("trivial assertion ...");
     // assert_eq!(1, 1);
-    assert_eq!(1, 2);
+    // assert_eq!(1, 2);
     // println!("[ok]");
     serial_println!("[ok]");
 }

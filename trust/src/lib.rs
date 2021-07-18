@@ -19,7 +19,7 @@ struct Quad {
 
 #[derive(Default)]
 struct Foobar {
-    manager: Mutex<ConnectionManager>,
+    conn_manager: Mutex<ConnectionManager>,
     pending_var: Condvar,
     rcv_var: Condvar,
 }
@@ -27,16 +27,16 @@ struct Foobar {
 type InterfaceHandle = Arc<Foobar>;
 
 pub struct Interface{
-    ih: Option<InterfaceHandle>,    // lock todo read & writes
-    jh: Option<thread::JoinHandle<io::Result<()>>>,
+    interface_handle: Option<InterfaceHandle>,    // lock todo read & writes
+    thread_handle: Option<thread::JoinHandle<io::Result<()>>>,
 }
 
 impl Drop for Interface {
     fn drop(&mut self) {
-        self.ih.as_mut().unwrap().manager.lock().unwrap().terminate = true;
+        self.interface_handle.as_mut().unwrap().conn_manager.lock().unwrap().terminate = true;
         
-        drop(self.ih.take());
-        self.jh
+        drop(self.interface_handle.take());
+        self.thread_handle
             .take()
             .expect("interface dropped more than once")
             .join()
@@ -50,24 +50,31 @@ impl Drop for Interface {
 struct ConnectionManager {
     terminate: bool,
     connections: HashMap<Quad, tcp::Connection>,
-    pendding: HashMap<u16, VecDeque<Quad>>,
+
+    //
+    //  这个hash中的的port，就是我们监听的端口，
+    //      而 VecDeque 则是现有的连接，这里包含还没有完成三次握手的连接
+    //
+    pendding: HashMap<u16/*listen port*/, VecDeque<Quad>>,
 }
 
 fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
     let mut buf = [0u8; 1504];
     
     loop{
-        // we want to read from nic, but make sure that weill wake up when the next
-        // timer has to be riggered !
+        // we want to read from nic, 
+        // but make sure that will wake up when the next timer has to be riggered !
         use std::os::unix::io::AsRawFd;
         let mut pfd = [nix::poll::PollFd::new(
             nic.as_raw_fd(),
             nix::poll::EventFlags::POLLIN
         )];
+
         let n = nix::poll::poll(&mut pfd[..], 1000).map_err(|e| e.as_errno().unwrap())?;
         assert_ne!(n, -1);
+        
         if n == 0 {
-            let mut cmg = ih.manager.lock().unwrap();
+            let mut cmg = ih.conn_manager.lock().unwrap();
             for connection in cmg.connections.values_mut() {
                 // TODO: don't die on errors ?
                 connection.on_tick(&mut nic)?;
@@ -100,23 +107,24 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
 				}
 			
 			// 解析tcp header
-			let ip_hdr_sz = iph.slice().len();
-				match etherparse::TcpHeaderSlice::from_slice(&buf[iph.slice().len()..nbytes]) {
-				Ok(tcph) => {
+			match etherparse::TcpHeaderSlice::from_slice(&buf[iph.slice().len()..nbytes]) {
+				
+                Ok(tcp_header) => {
 					use std::collections::hash_map::Entry;
-					let datai = iph.slice().len() + tcph.slice().len();
-                    let mut cmg = ih.manager.lock().unwrap();
+					let datai = iph.slice().len() + tcp_header.slice().len();
+                    let mut cmg = ih.conn_manager.lock().unwrap();
                     let cm = &mut *cmg;
                     let q = Quad {
-                        src: (src, tcph.source_port()),
-                        dst: (dst, tcph.destination_port()),
+                        src: (src, tcp_header.source_port()),
+                        dst: (dst, tcp_header.destination_port()),
                     };
+
 					match cm.connections.entry(q) {
 							Entry::Occupied(mut c) => {
                                 let a = c.get_mut().on_packet(
                                     &mut nic,
                                     iph,
-                                    tcph,
+                                    tcp_header,
                                     &buf[datai..nbytes]
                                 )?;
                                 drop(cmg);
@@ -127,12 +135,13 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                                     //ih.snd _var.notify_all();
                                 }
 							},
+
 							Entry::Vacant(e) => {
-                                if let Some(pendding) = cm.pendding.get_mut(&tcph.destination_port()) {
+                                if let Some(pendding) = cm.pendding.get_mut(&tcp_header.destination_port()) {
                                     if let Some(c) = tcp::Connection::accept(
                                         &mut nic,
                                         iph,
-                                        tcph,
+                                        tcp_header,
                                         &buf[datai..nbytes]) ? 
                                     {
                                         e.insert(c);
@@ -154,7 +163,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
 				}
 			},
 			Err(e) => {
-				//eprintln!("ignore weird packet {:?}", e)
+				eprintln!("ignore weird packet {:?}", e)
 			}
 	    }
 	}
@@ -164,9 +173,17 @@ impl Interface {
     pub fn new() -> io::Result<Self> {
         let nic = tun_tap::Iface::without_packet_info("tun0", tun_tap::Mode::Tun)?;
         
+        //
+        //  Arc: Atomic Reference Counter
+        //      原子计数是一种能够让你以线程安全的方式修改和增加它的值的类型
+        //      需要注意的是，Arc只能包含不可变数据。
+        //          这是因为如果两个线程试图在同一时间修改被包含的值，Arc无法保证避免数据竞争。
+        //          如果你希望修改数据，你应该在Arc类型内部封装一个互斥锁保护（Mutex guard）。
+        //
         let ih: InterfaceHandle = Arc::default();
 
         let jh = {
+            // 注意我们这里显示的调用 clone, 是因为 主线程 和 packet_loop线程 都需要
             let ih = ih.clone();
             thread::spawn(move || {
                 packet_loop(nic, ih)
@@ -174,45 +191,60 @@ impl Interface {
         };
 
         Ok(Interface{
-            ih: Some(ih),
-            jh: Some(jh),
+            interface_handle: Some(ih),
+            thread_handle: Some(jh),
         })
     }
 
     pub fn bind(&mut self, port: u16) -> io::Result<TcpListener> {
+        
         use std::collections::hash_map::Entry;
-        let mut cm = self.ih.as_mut().unwrap().manager.lock().unwrap();
+        
+        let mut cm = self.interface_handle.as_mut().unwrap().conn_manager.lock().unwrap();
+        
         match cm.pendding.entry(port) {
+
             Entry::Vacant(v) => {
+                // 绑定一个端口，就是初始化一个环形队列，用来存放已经握手完成的连接
                 v.insert(VecDeque::new());
             }
+
             Entry::Occupied(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
-                    "port already bounrd"
+                    "port already bound"
                 ));
             }
         };
+
         drop(cm);
+        
         Ok(TcpListener {
             port, 
-            h: self.ih.as_mut().unwrap().clone(),
+            interface_handle: self.interface_handle.as_mut().unwrap().clone(),
         })
     }
 }
 
+//
+//  一个 listener 的核心，其实就是那个监听的端口
+//    然后，所有连接到这个端口的连接，放到队列里边
+//
 pub struct TcpListener {
     port: u16,
-    h: InterfaceHandle,
+    interface_handle: InterfaceHandle,
 }
 
 impl Drop for TcpListener {
+
     fn drop(&mut self) {
-        let mut cm = self.h.manager.lock().unwrap();
+        let mut cm = self.interface_handle.conn_manager.lock().unwrap();
+        
         let pending = cm.pendding
             .remove(&self.port)
             .expect("port closed while listenner still active");
-        for quad in pending {
+
+        for _quad in pending {
             // tODO teminate cm.connecions[quad]
             unimplemented!();
         }
@@ -220,22 +252,37 @@ impl Drop for TcpListener {
 }
 
 impl TcpListener {
+
     pub fn accept(&mut self) -> io::Result<TcpStream> {
-        let mut cm = self.h.manager.lock().unwrap();
+
+        //
+        //  简单理解 if let
+        //  if let 是 rust 的语法糖， 意思是 if match then let ，match 被简化到只匹配一种情况、同时匹配后绑定
+        //  比如：if let Some(x) = optV  { dosth(x);}, 意思是
+        //    if (match Some(x)== optV) then {x = v;  dosth(x);｝
+        //
+        let mut connection_manager = self.interface_handle.conn_manager.lock().unwrap();
+        
         loop {
-            if let Some(quad) = cm
+            if let Some(quad) = connection_manager
                 .pendding
                 .get_mut(&self.port)
                 .expect("port closed while listenner still active")
                 .pop_front() 
             {
+                dbg!("accep fetch ready connections", quad);
                 return Ok(TcpStream {
                     quad,
-                    h: self.h.clone(),
+                    h: self.interface_handle.clone(),
                 });
             }
+            else 
+            {
+              //panic!("fadsf");
+              dbg!("~~~~ if let, connection_manager keys {}", connection_manager.pendding.keys());
+            }
             
-            cm = self.h.pending_var.wait(cm).unwrap();
+            connection_manager = self.interface_handle.pending_var.wait(connection_manager).unwrap();
         }
     }
 }
@@ -248,7 +295,7 @@ pub struct TcpStream {
 
 impl Drop for TcpStream {
     fn drop(&mut self) {
-        let cm = self.h.manager.lock().unwrap();
+        let cm = self.h.conn_manager.lock().unwrap();
         // TODO:send fin on cmd.connections[quad]
         // if let Some(c) = cm.connections.remove(&self.quad) {    
         //     //unimplemented!();
@@ -258,7 +305,7 @@ impl Drop for TcpStream {
 
 impl Read for TcpStream{
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut cm = self.h.manager.lock().unwrap();
+        let mut cm = self.h.conn_manager.lock().unwrap();
         loop {
             let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
                 io::Error::new(
@@ -293,7 +340,7 @@ impl Read for TcpStream{
 
 impl Write for TcpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut cm = self.h.manager.lock().unwrap();
+        let mut cm = self.h.conn_manager.lock().unwrap();
         let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::ConnectionAborted, 
@@ -315,7 +362,7 @@ impl Write for TcpStream {
     }
     
     fn flush(&mut self) -> io::Result<()> {
-        let mut cm = self.h.manager.lock().unwrap();
+        let mut cm = self.h.conn_manager.lock().unwrap();
         let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::ConnectionAborted, 
@@ -337,7 +384,7 @@ impl Write for TcpStream {
 
 impl TcpStream {
     pub fn shutdown(&self, how: std::net::Shutdown) -> io::Result<()> {
-        let mut cm = self.h.manager.lock().unwrap();
+        let mut cm = self.h.conn_manager.lock().unwrap();
         let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::ConnectionAborted, 

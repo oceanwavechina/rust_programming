@@ -11,6 +11,17 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 
 
+#[cfg(test)]
+use crate::{serial_print, serial_println};
+
+#[test_case]
+fn test_println_simple() {
+    serial_println!("test_println ...");
+    println!("test_println_simple output");
+    serial_println!("[ok]");
+}
+
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
