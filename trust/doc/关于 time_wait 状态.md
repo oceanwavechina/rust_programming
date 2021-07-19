@@ -51,3 +51,26 @@ ESTABLISHED
 * RTT
 
     RTT是客户到服务器往返所花时间（round-trip time，简称RTT），TCP含有动态估算RTT的算法。TCP还持续估算一个给定连接的RTT，这是因为RTT受网络传输拥塞程序的变化而变化
+
+
+## 3. 如何解决服务端大量 time_wait 导致服务不可用的状态
+
+首先 time_wait 的主要作用是防止新建立的连接受到之前数据包的干扰，因为如果没有 time_wait，快速建立的同样的连接(四元组)，有可能接收到之前连接发出的数据。 所以 time_wait 是为了，新建连接时，该链路上旧的数据包已经超时被丢弃了， 所以time_wait本身是有重要意义的
+
+另外产生 time_wait 的那端，一定是主动关闭连接的一端。这样我们可以让client端来主动关闭，把time_wait的压力从server端转移出去
+
+还有算是暴力处理：
+    
+   1. 设置 SO_LINGER 为0， 也就是当我们主动关闭 TCP 连接时，直接丢弃缓冲区中的信息，然后直接发送RST 消息，而不走正常的关闭流程
+   
+   2. 使用 net.ipv4.tcp_tw_reuse 选项，通过引入时间戳来重用处于 time_wait 的端口
+       By enabling net.ipv4.tcp_tw_reuse, Linux will reuse an existing connection in the TIME-WAIT state for a new **outgoing connection** if the new timestamp is strictly bigger than the most recent timestamp recorded for the previous connection: an outgoing connection in the TIME-WAIT state can be reused after just one second.
+       
+       注意这里对于 server 端来说， 这个选项对于 incoming connections 没有用处
+
+
+
+
+
+
+https://vincent.bernat.ch/en/blog/2014-tcp-time-wait-state-linux#netipv4tcp_tw_reuse

@@ -101,26 +101,26 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
 				let src = iph.source_addr();
 				let dst = iph.destination_addr();
 				if iph.protocol() != 0x06 {
-					println!("BAD PRPTOCOL");
-                    // not tcp
+					println!("NONE TCP PRPTOCOL");
                     continue;
 				}
 			
-			// 解析tcp header
-			match etherparse::TcpHeaderSlice::from_slice(&buf[iph.slice().len()..nbytes]) {
+			    // 解析tcp header
+			    match etherparse::TcpHeaderSlice::from_slice(&buf[iph.slice().len()..nbytes]) {
 				
-                Ok(tcp_header) => {
-					use std::collections::hash_map::Entry;
-					let datai = iph.slice().len() + tcp_header.slice().len();
-                    let mut cmg = ih.conn_manager.lock().unwrap();
-                    let cm = &mut *cmg;
-                    let q = Quad {
-                        src: (src, tcp_header.source_port()),
-                        dst: (dst, tcp_header.destination_port()),
-                    };
+                    Ok(tcp_header) => {
+                        use std::collections::hash_map::Entry;
+                        let datai = iph.slice().len() + tcp_header.slice().len();
+                        let mut cmg = ih.conn_manager.lock().unwrap();
+                        let cm = &mut *cmg;
+                        let quad = Quad {
+                            src: (src, tcp_header.source_port()),
+                            dst: (dst, tcp_header.destination_port()),
+                        };
 
-					match cm.connections.entry(q) {
-							Entry::Occupied(mut c) => {
+                        match cm.connections.entry(quad) {
+                                
+                            Entry::Occupied(mut c) => {
                                 let a = c.get_mut().on_packet(
                                     &mut nic,
                                     iph,
@@ -134,9 +134,9 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                                 if a.contains(tcp::Available::WRITE) {
                                     //ih.snd _var.notify_all();
                                 }
-							},
+                            },
 
-							Entry::Vacant(e) => {
+                            Entry::Vacant(e) => {
                                 if let Some(pendding) = cm.pendding.get_mut(&tcp_header.destination_port()) {
                                     if let Some(c) = tcp::Connection::accept(
                                         &mut nic,
@@ -145,21 +145,19 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                                         &buf[datai..nbytes]) ? 
                                     {
                                         e.insert(c);
-                                        pendding.push_back(q);
+                                        pendding.push_back(quad);
                                         drop(cmg);
                                         ih.pending_var.notify_all();
                                     }
                                 }
-							}
-						}
-						
-						
-					// (srcip, srcport, dstip, dstport)
-				},
-				Err(e) => {
-					eprintln!("ignore weird tcp packet {:?}", e)
-				}
+                            }
+                        }       
+                        // (srcip, srcport, dstip, dstport)
+                    },
 
+                    Err(e) => {
+                        // eprintln!("ignore none tcp header {:?}", e)
+                    }
 				}
 			},
 			Err(e) => {

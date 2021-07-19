@@ -56,6 +56,7 @@ pub struct Connection {
 }
 
 struct Timers {
+    // 真正意义上的 B-Tree
 	send_times: BTreeMap<u32, time::Instant>,
 	srtt: f64,
 }
@@ -132,10 +133,13 @@ struct SendSequeceSpace {
 struct RecvSequenceSpace {
 	/// receive next
 	nxt: u32,
+
 	/// receive window
 	wnd: u16,
+
 	/// receive urgent pointer
 	up: bool,
+
 	/// initial receive sequence number
 	irs: u32,
 }
@@ -143,64 +147,71 @@ struct RecvSequenceSpace {
 impl Connection {
 	pub fn accept<'a> (
 		nic: &mut tun_tap::Iface,
-		iph: etherparse::Ipv4HeaderSlice<'a>, 
-		tcph: etherparse::TcpHeaderSlice<'a>, 
+		ip_header: etherparse::Ipv4HeaderSlice<'a>, 
+		tcp_header: etherparse::TcpHeaderSlice<'a>, 
 		data: &'a [u8]
 	) -> io::Result< Option<Self> > {
 		
 		let mut buf =  [0u8; 1500];
 			
-		if !tcph.syn() {
+		if !tcp_header.syn() {
 			// only expected SYN packet
 			return Ok(None);
 		}
 
 		// 初始化Connection结构体
-		let iss = 0;		// initial sequence number
-		let wnd = 10;		// window
-		let mut c = Connection{
-			// after get the SYN request from client, 
-			// the server state gonna be  SynRcvd ( checkout the RFC)
+		let our_iss = 0;		// initial sequence number
+		let our_wnd = 10;		// window
+		let mut conn = Connection{
+			
 			timers: Timers{ 
 				send_times: Default::default(),
 				srtt: time::Duration::from_secs(1*60).as_secs_f64(),
 			},
+
+            //
+            // after get the SYN request from client, 
+			// the server state gonna be  SynRcvd ( checkout the RFC)
+            //
 			state: State::SynRcvd,
+
+            // 这里是在接下来的sync请求中要告诉 peer, 我们这边的参数配置
 			send: SendSequeceSpace {
-				iss,
-				una: iss,
-				nxt: iss,
-				wnd: wnd,
+				iss: our_iss,
+				una: our_iss,
+				nxt: our_iss,
+				wnd: our_wnd,
 				up: false,
 
 				wl1: 0,
 				wl2: 0,
 			},
+
 			recv: RecvSequenceSpace {
-				// keep track of sender info
-				irs: tcph.sequence_number(),
-				nxt: tcph.sequence_number() +1,
-				wnd: tcph.window_size(),
+				// keep track of peer info
+				irs: tcp_header.sequence_number(),
+				nxt: tcp_header.sequence_number() +1,
+				wnd: tcp_header.window_size(),
 				up: false,
 			},
-			tcp: etherparse::TcpHeader::new(tcph.destination_port(), tcph.source_port(), iss, wnd),
 
-			//param (payload_len: u16, time_to_live: u8, protocol: IpTrafficClass, source: [u8;4], destination: [u8;4])
+			tcp: etherparse::TcpHeader::new(tcp_header.destination_port(), tcp_header.source_port(), our_iss, our_wnd),
+
 			ip: etherparse::Ipv4Header::new(
 				0, 
 				64, 
 				etherparse::IpTrafficClass::Tcp, 
 				[
-					iph.destination()[0], 
-					iph.destination()[1],
-					iph.destination()[2],
-					iph.destination()[3],
+					ip_header.destination()[0], 
+					ip_header.destination()[1],
+					ip_header.destination()[2],
+					ip_header.destination()[3],
 				],
 				[
-					iph.source()[0],
-					iph.source()[1],
-					iph.source()[2],
-					iph.source()[3],
+					ip_header.source()[0],
+					ip_header.source()[1],
+					ip_header.source()[2],
+					ip_header.source()[3],
 				]
 			),
 			incoming: Default::default(),
@@ -213,42 +224,40 @@ impl Connection {
 	
 		// need to establish a connection
 		// set the syn and ack field
-		c.tcp.syn = true;
-		c.tcp.ack = true;
-		c.write(nic, c.send.nxt,  0)?;
+		conn.tcp.syn = true;    // 这个是告诉peer，我们这边的要发起syn请求
+		conn.tcp.ack = true;    // 这个是告诉peer，我们已处理对方的sync请求
+		conn.write(nic, conn.send.nxt,  0)?;
 
-		Ok(Some(c))
+		Ok(Some(conn))
 	}
 
 	fn write(&mut self, nic:&mut tun_tap::Iface, seq: u32, mut limit: usize) -> io::Result<usize> {
-		let mut buf =  [0u8; 1500];
-		//self.tcp.sequence_number = self.send.nxt;
+		
+        let mut buf =  [0u8; 1500];
 		self.tcp.sequence_number = seq;
 		self.tcp.acknowledgment_number = self.recv.nxt;
 		//if !self.tcp.syn && ! self.tcp.fin {
 		//	self.tcp.psh = true;
 		//}
-	println!(
-            "write(seq: {}, limit: {}) syn {:?} fin {:?}",
-            seq, limit, self.tcp.syn, self.tcp.fin,
-        );
-		// special case the "virtual" bytes
+
+	    println!("will write(seq: {}, limit: {}) syn {:?} fin {:?}", seq, limit, self.tcp.syn, self.tcp.fin,);
+		
+        // special case the "virtual" bytes
 		let mut offset = seq.wrapping_sub(self.send.una) as usize;
 		println!("FIN close {:?}", self.closed_at);
-		if let Some(closed_at) = self.closed_at {
+		
+        if let Some(closed_at) = self.closed_at {
 			if seq == closed_at.wrapping_add(1) {
 				// trying to write following FIN
 				offset = 0;
 				limit = 0;
 			}
 		}
-		println!(
-            "using offset {} base {} in {:?}",
-            offset,
-            self.send.una,
-            self.unacked.as_slices()
-        );
-		let (mut h, mut t) = self.unacked.as_slices();
+
+		println!("using offset {} base {} in {:?}", offset, self.send.una, self.unacked.as_slices());
+		
+        let (mut h, mut t) = self.unacked.as_slices();
+
 		if h.len() >= offset {
 			h = &h[offset..];
 		} else {
@@ -275,7 +284,8 @@ impl Connection {
 		let mut unwritten = &mut buf[..];	
 		self.ip.write(& mut unwritten);		// move to next writefull point we have not written yet
 		self.tcp.write(& mut unwritten);
-		let payload_bytes = {
+		
+        let payload_bytes = {
 			let mut written = 0;
 			let mut limit = max_data;
 			
@@ -289,6 +299,7 @@ impl Connection {
 			written += unwritten.write(&t[..p2l])?;
 			written
 		};
+
 		let unwritten = unwritten.len();
 		let mut next_seq = self.send.nxt.wrapping_add(payload_bytes as u32);
 		if self.tcp.syn {
@@ -393,6 +404,7 @@ impl Connection {
 		tcph: etherparse::TcpHeaderSlice<'a>, 
 		data: &'a [u8]
 	) -> io::Result<Available> {
+
 		//fist, check that sequence numbers are valid (RFC S3.3)
 		let seqn = tcph.sequence_number();
 		let mut slen = data.len() as u32;
@@ -518,7 +530,7 @@ impl Connection {
 							.wrapping_add(data.len() as u32)
 							.wrapping_add(if tcph.fin() { 1 } else { 0 });
 
-			// TODO m,ayba just tick ot piggyback ack on data?
+			// TODO mayba just tick ot piggyback ack on data?
 			self.write(nic,self.send.nxt, 0)?;
 		}
 
@@ -539,16 +551,20 @@ impl Connection {
 
 	pub(crate) fn close(&mut self) -> io::Result<()> {
 	    self.closed = true;
+        
         match self.state {
+            
             State::SynRcvd | State::Estab => {
                 self.state = State::FinWait1;
             }
+
             State::FinWait1 | State::FinWait2 => {}
             _ => return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
                 "already closing",
                 ))
         };
+        
         Ok(())
 	}
 
